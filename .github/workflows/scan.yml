@@ -1,11 +1,12 @@
 name: XRPL Real Scan
+
 on:
   schedule:
-    - cron: '* * * * *'  # Ejecución automática cada 1 minuto (máxima frecuencia en GitHub Actions)
+    - cron: '* * * * *'
   workflow_dispatch:
 
 jobs:
-:   scan:
+  scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
