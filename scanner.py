@@ -11,7 +11,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 from xrpl.asyncio.clients import AsyncJsonRpcClient
-from xrpl.models.requests.account_info import AccountInfo
+from xrpl.models.requests import AccountInfo
 from xrpl.wallet import Wallet
 
 # Configuración estricta de logging estructurado
@@ -106,7 +106,6 @@ async def scan_cycle() -> None:
         new_hits_found = 0
         for res in results:
             if isinstance(res, dict) and res.get("hit"):
-                # Evitar duplicados
                 addr = res["address"]
                 if not any(h.get("address") == addr for h in existing_hits):
                     existing_hits.append(res)
