@@ -8,15 +8,14 @@ from xrpl.asyncio.clients import AsyncJsonRpcClient
 from xrpl.wallet import Wallet
 from xrpl.models.requests.account_info import AccountInfo
 
-# Configuración masiva de nodos XRPL oficiales y clusters públicos
+# Configuración masiva de nodos XRPL
 NODES = [
     "https://s1.ripple.com:51234",
     "https://s2.ripple.com:51234",
-    "https://xrplcluster.com",
-    "https://s.altnet.rippletest.net:51234"
+    "https://xrplcluster.com"
 ]
 DB_FILE = "xrpl_hits.db"
-LOG_FILE = "hits_report.txt"
+JSON_OUTPUT = "hits.json"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -28,63 +27,56 @@ def init_db():
 async def check_wallet(node_url, wallet, semaphore):
     async with semaphore:
         client = AsyncJsonRpcClient(node_url)
-        start = time.perf_counter()
         try:
             request = AccountInfo(account=wallet.address)
             response = await client.request(request)
-            latency = time.perf_counter() - start
-            
             if response.status == "success":
                 balance = response.result.get("account_data", {}).get("Balance", 0)
-                # Si el balance es mayor a 0, es un hit relevante
                 if int(balance) > 0:
-                    return {"hit": True, "address": wallet.address, "seed": wallet.seed, "balance": balance, "latency": latency}
+                    return {"hit": True, "address": wallet.address, "seed": wallet.seed, "balance": balance}
         except Exception:
             pass
-        return {"hit": False, "latency": time.perf_counter() - start}
+        return {"hit": False}
+
+async def update_json_output():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM hits")
+    rows = cursor.fetchall()
+    hits = [{"address": r[0], "seed": r[1], "balance": r[2], "timestamp": r[3]} for r in rows]
+    with open(JSON_OUTPUT, "w") as f:
+        json.dump(hits, f, indent=4)
+    conn.close()
 
 async def scan():
     init_db()
     conn = sqlite3.connect(DB_FILE)
+    batch_size = 50
+    semaphore = asyncio.Semaphore(10)
     
-    # MÁXIMA POTENCIA: Lotes masivos de 100 carteras para mantener estabilidad en render
-    batch_size = 100
-    semaphore = asyncio.Semaphore(20)
+    print(f"--- Iniciando ciclo de escaneo masivo: {time.ctime()} ---")
     
-    print(f"--- Iniciando nuevo ciclo de escaneo masivo ---")
-    
-    tasks = []
-    for _ in range(batch_size):
-        node = random.choice(NODES)
-        wallet = Wallet.create()
-        tasks.append(check_wallet(node, wallet, semaphore))
-    
+    tasks = [check_wallet(random.choice(NODES), Wallet.create(), semaphore) for _ in range(batch_size)]
     results = await asyncio.gather(*tasks)
     
     hits_found = 0
     for r in results:
         if r.get("hit"):
             hits_found += 1
-            timestamp = time.ctime()
+            ts = time.ctime()
             conn.execute("INSERT OR IGNORE INTO hits VALUES (?, ?, ?, ?)", 
-                         (r['address'], r['seed'], r['balance'], timestamp))
+                         (r['address'], r['seed'], r['balance'], ts))
+            print(f"🚨 NUEVO HIT: {r['address']} | Saldo: {r['balance']}")
             
-            # Reporte en archivo de texto para que lo puedas descargar o leer fácilmente
-            with open(LOG_FILE, "a") as f:
-                f.write(f"[{timestamp}] HIT! {r['address']} | Saldo: {r['balance']} | Seed: {r['seed']}\n")
-            
-            print(f"🚨 HIT DETECTADO: {r['address']} | Saldo: {r['balance']}")
-    
     conn.commit()
     conn.close()
-    
-    print(f"✅ Ciclo finalizado. Hits encontrados: {hits_found}")
+    await update_json_output()
+    print(f"✅ Ciclo finalizado. Total hits acumulados: {hits_found}")
 
 if __name__ == "__main__":
-    # Bucle infinito para que corra 24/7 en Render
     while True:
         try:
             asyncio.run(scan())
         except Exception as e:
             print(f"Error en ciclo: {e}")
-        time.sleep(5) # Pequeña pausa entre ciclos
+        time.sleep(2)
