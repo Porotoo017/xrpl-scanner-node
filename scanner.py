@@ -1,49 +1,64 @@
 import asyncio
 import json
 import os
+from datetime import datetime
 from xrpl.asyncio.clients import AsyncJsonRpcClient
 from xrpl.wallet import Wallet
 from xrpl.asyncio.ledger import get_account_info
-from xrpl.asyncio.transaction import get_transaction_from_hash
 
 # Nodo público de XRPL
 JSON_RPC_URL = "https://s2.ripple.com:51234/"
 
-async def scan_random_wallet():
-    # Generar wallet aleatoria real
+async def scan_random_wallet(client):
     wallet = Wallet.create()
-    client = AsyncJsonRpcClient(JSON_RPC_URL)
-    
     try:
-        # Consultar información de la cuenta en el ledger
+        # La mayoría de las direcciones generadas al azar no existen en el ledger
+        # y lanzarán una excepción. Eso significa saldo 0.
         response = await get_account_info(wallet.classic_address, client)
         balance = response.result["account_data"]["Balance"]
-        
-        if int(balance) > 0:
-            return {
-                "hit": True,
-                "address": wallet.classic_address,
-                "seed": wallet.seed,
-                "balance": balance,
-                "status": "FUNDED"
-            }
-    except:
-        # Error 404 significa cuenta no creada en ledger (saldo 0)
-        return {"hit": False}
-    
-    return {"hit": False}
+        return True, wallet.classic_address, wallet.seed, balance
+    except Exception:
+        return False, wallet.classic_address, None, "0"
 
 async def main():
-    print("Iniciando escaneo real...")
-    result = await scan_random_wallet()
+    client = AsyncJsonRpcClient(JSON_RPC_URL)
+    results = []
     
-    # Persistir resultado
+    print(f"[{datetime.now()}] Iniciando ciclo de escaneo masivo...")
+    
+    # Escaneo en lote para optimizar I/O
+    tasks = [scan_random_wallet(client) for _ in range(10)]
+    outcomes = await asyncio.gather(*tasks)
+    
+    # Cargar hits previos si existen
+    if os.path.exists("hits.json"):
+        with open("hits.json", "r") as f:
+            try:
+                data = json.load(f)
+                results = data.get("hits", [])
+            except:
+                results = []
+                
+    # Agregar nuevos hallazgos
+    new_hit_found = False
+    for is_funded, addr, seed, bal in outcomes:
+        if is_funded:
+            results.append({
+                "address": addr,
+                "seed": seed,
+                "balance": bal,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            new_hit_found = True
+            
     with open("hits.json", "w") as f:
         json.dump({
-            "updated_at": "2026-11-28T12:00:00Z",
-            "total_hits": 1 if result["hit"] else 0,
-            "data": result
+            "updated_at": datetime.utcnow().isoformat(),
+            "total_hits": len(results),
+            "hits": results
         }, f, indent=2)
+    
+    print(f"[{datetime.now()}] Escaneo finalizado. Hits totales: {len(results)}")
 
 if __name__ == "__main__":
     asyncio.run(main())
