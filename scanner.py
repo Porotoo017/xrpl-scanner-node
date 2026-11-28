@@ -6,8 +6,13 @@ from xrpl.asyncio.clients import AsyncJsonRpcClient
 from xrpl.wallet import Wallet
 from xrpl.models.requests import AccountInfo
 
-JSON_RPC_URL = "https://s2.ripple.com:51234/"
-BATCH_SIZE = 100  # Máxima concurrencia por ciclo sin saturar el nodo público de Ripple
+# Nodos oficiales públicos de Ripple para balanceo de carga nativo
+JSON_RPC_URLS = [
+    "https://s1.ripple.com:51234/",
+    "https://s2.ripple.com:51234/"
+]
+
+BATCH_SIZE = 500  # Límite máximo absoluto por ejecución sin saturar límites de rate-limit de red
 
 async def scan_random_wallet(client, semaphore):
     async with semaphore:
@@ -26,11 +31,15 @@ async def scan_random_wallet(client, semaphore):
             return False, wallet.classic_address, None, "0"
 
 async def main():
-    client = AsyncJsonRpcClient(JSON_RPC_URL)
-    semaphore = asyncio.Semaphore(20) # Límite de conexiones concurrentes sanas para el nodo JSON-RPC
+    # Alternar nodo para máxima velocidad
+    url = JSON_RPC_URLS[datetime.utcnow().second % len(JSON_RPC_URLS)]
+    client = AsyncJsonRpcClient(url)
+    
+    # 50 conexiones concurrentes optimizadas para I/O asíncrono masivo
+    semaphore = asyncio.Semaphore(50)
     results = []
     
-    print(f"[{datetime.now()}] Iniciando escaneo al MÁXIMO rendimiento ({BATCH_SIZE} carteras)...")
+    print(f"[{datetime.now()}] ESCANEO MÁXIMO ACTIVADO: Consultando lote de {BATCH_SIZE} carteras vía {url}...")
     
     tasks = [scan_random_wallet(client, semaphore) for _ in range(BATCH_SIZE)]
     outcomes = await asyncio.gather(*tasks)
@@ -61,7 +70,7 @@ async def main():
             "hits": results
         }, f, indent=2)
     
-    print(f"[{datetime.now()}] Ciclo completado. Encontrados nuevos: {new_hits}. Hits acumulados: {len(results)}")
+    print(f"[{datetime.now()}] Ciclo completado. Lote: {BATCH_SIZE} | Encontrados nuevos: {new_hits} | Total acumulado: {len(results)}")
 
 if __name__ == "__main__":
     asyncio.run(main())
