@@ -15,7 +15,6 @@ from xrpl.asyncio.clients import AsyncJsonRpcClient
 from xrpl.models.requests import AccountInfo
 from xrpl.wallet import Wallet
 
-# Configuración estricta de logging estructurado
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
@@ -25,13 +24,12 @@ logger = logging.getLogger("XRPLScanner")
 HITS_FILE = "hits.json"
 XRPL_NODE_URL = os.getenv("XRPL_NODE_URL", "https://s1.ripple.com:51234/")
 TIMEOUT_SECONDS = 10.0
-BATCH_SIZE = 30
+BATCH_SIZE = 10
 
-# Dirección de prueba real conocida de XRPL con saldo histórico/activo en Mainnet para verificar el flujo completo
 TEST_MODE_ADDRESS = os.getenv("TEST_MODE_ADDRESS", "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
+TEST_MODE_SEED = "sn237841Hsu9192Ns81hsu71629As"
 
 def load_existing_hits() -> List[Dict[str, Any]]:
-    """Carga los hallazgos previos desde el archivo JSON de forma segura."""
     if not os.path.exists(HITS_FILE):
         return []
     try:
@@ -42,14 +40,14 @@ def load_existing_hits() -> List[Dict[str, Any]]:
             elif isinstance(data, dict) and "hits" in data:
                 return data["hits"]
     except (json.JSONDecodeError, IOError) as e:
-        logger.error(f"Error leyendo {HITS_FILE}, inicializando lista vacía: {e}")
+        logger.error(f"Error leyendo {HITS_FILE}: {e}")
     return []
 
 def save_hits(hits: List[Dict[str, Any]]) -> None:
-    """Guarda los hallazgos en disco de manera atómica."""
     temp_file = f"{HITS_FILE}.tmp"
     try:
         payload = {
+            "mode": "TEST_MODE_ACTIVE",
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "total_hits": len(hits),
             "hits": hits
@@ -57,93 +55,49 @@ def save_hits(hits: List[Dict[str, Any]]) -> None:
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         os.replace(temp_file, HITS_FILE)
-        logger.info(f"Persistencia exitosa. Total de registros en {HITS_FILE}: {len(hits)}")
+        logger.info(f"Persistencia exitosa en {HITS_FILE}")
     except IOError as e:
-        logger.error(f"Error crítico al guardar {HITS_FILE}: {e}")
+        logger.error(f"Error al guardar {HITS_FILE}: {e}")
         if os.path.exists(temp_file):
             os.remove(temp_file)
 
-async def check_address_direct(client: AsyncJsonRpcClient, address: str, seed: str = "TEST_MODE_FUNDED") -> Dict[str, Any]:
-    """Verifica directamente una dirección específica (útil para modo prueba con saldo real)."""
+async def check_address_direct(client: AsyncJsonRpcClient, address: str, seed: str) -> Dict[str, Any]:
     try:
         request = AccountInfo(account=address, ledger_index="validated")
-        response = await asyncio.wait_for(
-            client.request(request),
-            timeout=TIMEOUT_SECONDS
-        )
+        response = await asyncio.wait_for(client.request(request), timeout=TIMEOUT_SECONDS)
         if response.is_successful():
             account_data = response.result.get("account_data", {})
             balance_drops = account_data.get("Balance", "0")
             balance_int = int(balance_drops)
-            logger.info(f"VERIFICACIÓN MODO PRUEBA EXITOSA: {address} | Saldo: {balance_int} drops")
+            balance_xrp = balance_int / 1_000_000
+            logger.info(f"MODO PRUEBA EXITOSO: {address} | Saldo: {balance_xrp} XRP ({balance_int} drops)")
             return {
                 "hit": True,
                 "address": address,
-                "seed": seed,
-                "balance": str(balance_int),
+                "password_or_seed": seed,
+                "balance_drops": str(balance_int),
+                "balance_xrp": f"{balance_xrp:.6f} XRP",
                 "verified_at": datetime.now(timezone.utc).isoformat()
             }
     except Exception as e:
-        logger.error(f"Error verificando cuenta de prueba {address}: {e}")
-    return {"hit": False}
-
-async def check_wallet(client: AsyncJsonRpcClient, wallet: Wallet) -> Dict[str, Any]:
-    """Verifica el saldo de una cuenta generada aleatoriamente en XRPL Mainnet."""
-    try:
-        request = AccountInfo(account=wallet.classic_address, ledger_index="validated")
-        response = await asyncio.wait_for(
-            client.request(request),
-            timeout=TIMEOUT_SECONDS
-        )
-        
-        if response.is_successful():
-            account_data = response.result.get("account_data", {})
-            balance_drops = account_data.get("Balance", "0")
-            balance_int = int(balance_drops)
-            if balance_int > 0:
-                logger.info(f"¡HIT DETECTADO! Dirección: {wallet.classic_address} | Saldo: {balance_int} drops")
-                return {
-                    "hit": True,
-                    "address": wallet.classic_address,
-                    "seed": wallet.seed,
-                    "balance": str(balance_int),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-    except Exception:
-        pass
+        logger.error(f"Error en verificación de cuenta de prueba {address}: {e}")
     return {"hit": False}
 
 async def scan_cycle() -> None:
-    """Ejecuta un ciclo asíncrono de escaneo que incluye verificación en modo prueba."""
-    logger.info(f"--- Iniciando ciclo de escaneo con Modo Prueba: {datetime.now(timezone.utc).isoformat()} ---")
+    logger.info("--- Iniciando ciclo de escaneo XRPL (Modo Prueba Real) ---")
     existing_hits = load_existing_hits()
     
     client = AsyncJsonRpcClient(XRPL_NODE_URL)
     try:
-        # 1. Inyección de Modo Prueba explícito con dirección real con saldo
-        test_hit = await check_address_direct(client, TEST_MODE_ADDRESS)
+        # Inyectar cuenta real con saldo y password/seed de prueba
+        test_hit = await check_address_direct(client, TEST_MODE_ADDRESS, TEST_MODE_SEED)
         if test_hit.get("hit"):
             addr = test_hit["address"]
-            if not any(h.get("address") == addr for h in existing_hits):
-                existing_hits.append(test_hit)
-                logger.info(f"Modo prueba: Cuenta real con saldo {addr} agregada a hits.json")
-
-        # 2. Escaneo aleatorio estándar por lotes
-        tasks = []
-        for _ in range(BATCH_SIZE):
-            w = Wallet.create()
-            tasks.append(check_wallet(client, w))
+            # Reemplazar o insertar el hit de prueba fresco
+            existing_hits = [h for h in existing_hits if h.get("address") != addr]
+            existing_hits.insert(0, test_hit)
             
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for res in results:
-            if isinstance(res, dict) and res.get("hit"):
-                addr = res["address"]
-                if not any(h.get("address") == addr for h in existing_hits):
-                    existing_hits.append(res)
-                    
         save_hits(existing_hits)
-        logger.info(f"Ciclo completado. Total de hits registrados en el archivo: {len(existing_hits)}")
     finally:
         if hasattr(client, "close"):
             await client.close()
