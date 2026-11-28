@@ -8,6 +8,8 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -24,6 +26,7 @@ jobs:
         run: |
           git config --global user.name 'github-actions'
           git config --global user.email 'github-actions@github.com'
+          git pull --rebase origin main || true
           git add hits.json
           git commit -m "chore: auto-update max scan results" || echo "No changes"
-          git push
+          git push origin main
