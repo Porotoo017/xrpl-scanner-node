@@ -28,7 +28,7 @@ TIMEOUT_SECONDS = 10.0
 BATCH_SIZE = 30
 
 # Dirección de prueba real conocida de XRPL con saldo histórico/activo en Mainnet para verificar el flujo completo
-TEST_MODE_ADDRESS = os.getenv("TEST_MODE_ADDRESS", "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh") # Cuenta génesis / cuenta validada de ripple
+TEST_MODE_ADDRESS = os.getenv("TEST_MODE_ADDRESS", "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
 
 def load_existing_hits() -> List[Dict[str, Any]]:
     """Carga los hallazgos previos desde el archivo JSON de forma segura."""
@@ -118,7 +118,8 @@ async def scan_cycle() -> None:
     logger.info(f"--- Iniciando ciclo de escaneo con Modo Prueba: {datetime.now(timezone.utc).isoformat()} ---")
     existing_hits = load_existing_hits()
     
-    async with AsyncJsonRpcClient(XRPL_NODE_URL) as client:
+    client = AsyncJsonRpcClient(XRPL_NODE_URL)
+    try:
         # 1. Inyección de Modo Prueba explícito con dirección real con saldo
         test_hit = await check_address_direct(client, TEST_MODE_ADDRESS)
         if test_hit.get("hit"):
@@ -135,16 +136,17 @@ async def scan_cycle() -> None:
             
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        new_hits_found = 1 if test_hit.get("hit") else 0
         for res in results:
             if isinstance(res, dict) and res.get("hit"):
                 addr = res["address"]
                 if not any(h.get("address") == addr for h in existing_hits):
                     existing_hits.append(res)
-                    new_hits_found += 1
                     
         save_hits(existing_hits)
         logger.info(f"Ciclo completado. Total de hits registrados en el archivo: {len(existing_hits)}")
+    finally:
+        if hasattr(client, "close"):
+            await client.close()
 
 def main() -> None:
     asyncio.run(scan_cycle())
