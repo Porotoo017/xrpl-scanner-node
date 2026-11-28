@@ -16,6 +16,7 @@ NODES = [
     "https://s.altnet.rippletest.net:51234"
 ]
 DB_FILE = "xrpl_hits.db"
+LOG_FILE = "hits_report.txt"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -35,7 +36,9 @@ async def check_wallet(node_url, wallet, semaphore):
             
             if response.status == "success":
                 balance = response.result.get("account_data", {}).get("Balance", 0)
-                return {"hit": True, "address": wallet.address, "seed": wallet.seed, "balance": balance, "latency": latency}
+                # Si el balance es mayor a 0, es un hit relevante
+                if int(balance) > 0:
+                    return {"hit": True, "address": wallet.address, "seed": wallet.seed, "balance": balance, "latency": latency}
         except Exception:
             pass
         return {"hit": False, "latency": time.perf_counter() - start}
@@ -44,11 +47,11 @@ async def scan():
     init_db()
     conn = sqlite3.connect(DB_FILE)
     
-    # MÁXIMA POTENCIA: Lotes masivos de 500 carteras por ciclo con semáforo concurrente de 30 workers simultáneos
-    batch_size = 500
-    semaphore = asyncio.Semaphore(30)
+    # MÁXIMA POTENCIA: Lotes masivos de 100 carteras para mantener estabilidad en render
+    batch_size = 100
+    semaphore = asyncio.Semaphore(20)
     
-    start_total = time.perf_counter()
+    print(f"--- Iniciando nuevo ciclo de escaneo masivo ---")
     
     tasks = []
     for _ in range(batch_size):
@@ -58,21 +61,30 @@ async def scan():
     
     results = await asyncio.gather(*tasks)
     
-    total_time = time.perf_counter() - start_total
     hits_found = 0
-    
     for r in results:
         if r.get("hit"):
             hits_found += 1
+            timestamp = time.ctime()
             conn.execute("INSERT OR IGNORE INTO hits VALUES (?, ?, ?, ?)", 
-                         (r['address'], r['seed'], r['balance'], time.ctime()))
+                         (r['address'], r['seed'], r['balance'], timestamp))
+            
+            # Reporte en archivo de texto para que lo puedas descargar o leer fácilmente
+            with open(LOG_FILE, "a") as f:
+                f.write(f"[{timestamp}] HIT! {r['address']} | Saldo: {r['balance']} | Seed: {r['seed']}\n")
+            
+            print(f"🚨 HIT DETECTADO: {r['address']} | Saldo: {r['balance']}")
     
     conn.commit()
     conn.close()
     
-    # Telemetría de alta densidad
-    print(f"🔥 LOTE MASIVO: {batch_size} carteras verificadas en {total_time:.2f}s")
-    print(f"🚀 Throughput: {batch_size/total_time:.2f} rps | Hits: {hits_found}")
+    print(f"✅ Ciclo finalizado. Hits encontrados: {hits_found}")
 
 if __name__ == "__main__":
-    asyncio.run(scan())
+    # Bucle infinito para que corra 24/7 en Render
+    while True:
+        try:
+            asyncio.run(scan())
+        except Exception as e:
+            print(f"Error en ciclo: {e}")
+        time.sleep(5) # Pequeña pausa entre ciclos
